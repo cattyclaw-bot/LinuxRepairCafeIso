@@ -157,14 +157,73 @@ copy_preseed_files() {
         die "Failed to copy ${PRESEED_DIR} to ${BUILD_DIR}/preseed"
 }
 
+extract_grub_preamble() {
+    local -r grub_cfg="$1"
+    local -r output_file="$2"
+
+    # Mint's upstream grub.cfg may indent menuentry blocks, so allow leading
+    # whitespace when identifying the boundary between preamble and menu.
+    awk '/^[[:space:]]*menuentry/{exit} {print}' "$grub_cfg" > "$output_file" || \
+        die "Failed to extract grub.cfg preamble from ${grub_cfg}"
+}
+
+sanitize_custom_grub_menu() {
+    local -r grub_cfg="$1"
+    local -r output_file="$2"
+
+    # Treat the custom grub.cfg as a menu fragment. Drop any preamble lines
+    # before the first menuentry so they cannot conflict with the preserved
+    # upstream preamble.
+    awk '
+        BEGIN { seen = 0 }
+        /^[[:space:]]*menuentry[[:space:]]/ { seen = 1 }
+        seen { print }
+    ' "$grub_cfg" > "$output_file" || \
+        die "Failed to sanitize custom grub.cfg from ${grub_cfg}"
+
+    if ! grep -q '^[[:space:]]*menuentry[[:space:]]' "$output_file"; then
+        die "Custom grub.cfg does not contain any menuentry blocks: ${grub_cfg}"
+    fi
+}
+
+log_original_boot_config() {
+    # Diagnostic trail: capture what the upstream ISO actually shipped, so a build
+    # log can be diffed against ours when tracking down EFI boot differences.
+    log "Original boot/grub/grub.cfg preamble (everything before the first menuentry):"
+    awk '/^[[:space:]]*menuentry/{exit} {print}' "${BUILD_DIR}/boot/grub/grub.cfg"
+
+    log "Original ISO build command (.disk/mkisofs), for comparison with our xorriso flags:"
+    if [[ -f "${BUILD_DIR}/.disk/mkisofs" ]]; then
+        cat "${BUILD_DIR}/.disk/mkisofs"
+    else
+        log "  (.disk/mkisofs not present on this ISO)"
+    fi
+}
+
 copy_boot_configs() {
     log "Copying isolinux.cfg"
     cp -a "${PRESEED_DIR}/config/isolinux.cfg" "${BUILD_DIR}/isolinux/" || \
         die "Failed to copy isolinux.cfg to ${BUILD_DIR}/isolinux"
-    
-    log "Copying grub.cfg"
-    cp -a "${PRESEED_DIR}/config/grub.cfg" "${BUILD_DIR}/boot/grub/" || \
-        die "Failed to copy grub.cfg to ${BUILD_DIR}/boot/grub"
+
+    log_original_boot_config
+
+    log "Merging custom grub.cfg onto the original grub.cfg's preamble"
+    local -r orig_grub_cfg="${BUILD_DIR}/boot/grub/grub.cfg"
+    local -r preamble_file="${WORK_DIR}/grub_preamble.cfg"
+    local -r custom_menu_file="${WORK_DIR}/grub_menu.cfg"
+
+    # Keep whatever module loads / terminal+theme setup the upstream grub.cfg had
+    # before its first menuentry. This varies between Mint releases, and our
+    # preseed/config/grub.cfg replaces the whole file rather than extending it -
+    # dropping that preamble can change how grub sets up EFI graphics state before
+    # handing off to the kernel.
+    extract_grub_preamble "$orig_grub_cfg" "$preamble_file"
+    sanitize_custom_grub_menu "${PRESEED_DIR}/config/grub.cfg" "$custom_menu_file"
+
+    cat "$preamble_file" "$custom_menu_file" > "${orig_grub_cfg}.new" || \
+        die "Failed to build merged grub.cfg"
+    mv "${orig_grub_cfg}.new" "$orig_grub_cfg" || \
+        die "Failed to install merged grub.cfg to ${orig_grub_cfg}"
 }
 
 update_iso_checksum() {
