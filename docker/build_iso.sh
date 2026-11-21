@@ -500,7 +500,7 @@ Type=Application
 X-GNOME-Autostart-enabled=true
 EOF
 
-    for desktop_dir in "$rootfs/etc/skel/Desktop" "$rootfs/home/mint/Desktop"; do
+    for desktop_dir in "$rootfs/etc/skel/Desktop"; do
         mkdir -p "$desktop_dir"
         desktop_file="$desktop_dir/kilocode.desktop"
         cp "$rootfs/usr/share/applications/kilocode.desktop" "$desktop_file"
